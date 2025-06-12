@@ -224,7 +224,7 @@
 <body>
     <div class="container">
         <h1>H5P → SCORM</h1>
-        <p class="subtitle">Konvertiere H5P-Pakete in SCORM 1.2</p>
+        <p class="subtitle">Konvertiere H5P-Pakete in SCORM 1.2 für OLAT</p>
         
         <div class="upload-area" id="uploadArea">
             <div class="upload-icon">📦</div>
@@ -248,9 +248,9 @@
             <h3>Funktionen:</h3>
             <ul>
                 <li>Konvertiert H5P-Inhalte in SCORM 1.2 Format</li>
-                <li>Behält alle interaktiven Elemente bei</li>
+                <li>Optimiert für OLAT LMS</li>
                 <li>Erstellt vollständiges imsmanifest.xml</li>
-                <li>Kompatibel mit allen gängigen LMS</li>
+                <li>Integriert H5P-Player direkt</li>
             </ul>
         </div>
     </div>
@@ -325,16 +325,23 @@
 
                 const h5pJson = JSON.parse(await h5pZip.files['h5p.json'].async('string'));
                 
+                // Prüfe ob content.json existiert
+                if (!h5pZip.files['content/content.json']) {
+                    throw new Error('Ungültige H5P-Datei: content.json fehlt');
+                }
+
+                const contentJson = JSON.parse(await h5pZip.files['content/content.json'].async('string'));
+                
                 updateProgress(50, 'Erstelle SCORM-Struktur...');
                 
                 // Erstelle SCORM-Paket
                 const scormZip = new JSZip();
                 
-                // Kopiere alle H5P-Inhalte
+                // Erstelle H5P Unterordner und kopiere alle H5P-Inhalte dorthin
                 for (let filename in h5pZip.files) {
                     if (!h5pZip.files[filename].dir) {
                         const content = await h5pZip.files[filename].async('arraybuffer');
-                        scormZip.file(filename, content);
+                        scormZip.file('h5p/' + filename, content);
                     }
                 }
 
@@ -344,13 +351,17 @@
                 const manifest = createManifest(h5pJson);
                 scormZip.file('imsmanifest.xml', manifest);
 
-                // Erstelle SCORM Wrapper HTML
-                const wrapperHtml = createScormWrapper();
+                // Erstelle SCORM Wrapper HTML (index.html im Root)
+                const wrapperHtml = createScormWrapper(h5pJson, contentJson);
                 scormZip.file('index.html', wrapperHtml);
 
                 // Erstelle SCORM API JavaScript
                 const scormApi = createScormAPI();
-                scormZip.file('scorm_api.js', scormApi);
+                scormZip.file('scormapi.js', scormApi);
+
+                // Erstelle H5P Integration Script
+                const h5pIntegration = createH5PIntegration(h5pJson, contentJson);
+                scormZip.file('h5pintegration.js', h5pIntegration);
 
                 updateProgress(90, 'Finalisiere SCORM-Paket...');
 
@@ -366,6 +377,7 @@
 
             } catch (error) {
                 showError('Fehler bei der Konvertierung: ' + error.message);
+                console.error(error);
             }
         }
 
@@ -392,6 +404,7 @@
             <title>${escapeXml(title)}</title>
             <item identifier="item1" identifierref="resource1">
                 <title>${escapeXml(title)}</title>
+                <adlcp:masteryscore>70</adlcp:masteryscore>
             </item>
         </organization>
     </organizations>
@@ -399,69 +412,96 @@
     <resources>
         <resource identifier="resource1" type="webcontent" adlcp:scormtype="sco" href="index.html">
             <file href="index.html"/>
-            <file href="scorm_api.js"/>
-            <file href="h5p.json"/>
-            <file href="content/content.json"/>
-            <dependency identifierref="h5p_libraries"/>
-        </resource>
-        <resource identifier="h5p_libraries" type="webcontent" adlcp:scormtype="asset">
+            <file href="scormapi.js"/>
+            <file href="h5pintegration.js"/>
+            <file href="h5p/h5p.json"/>
+            <file href="h5p/content/content.json"/>
             ${generateFileList(h5pJson)}
         </resource>
     </resources>
 </manifest>`;
         }
 
-        function createScormWrapper() {
+        function createScormWrapper(h5pJson, contentJson) {
+            const mainLibrary = h5pJson.mainLibrary;
+            
             return `<!DOCTYPE html>
-<html lang="en">
+<html lang="de">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SCORM H5P Content</title>
-    <script src="scorm_api.js"><\/script>
+    <title>${escapeHtml(h5pJson.title || 'H5P Content')}</title>
+    <script src="scormapi.js"><\/script>
+    
+    <!-- H5P Core files -->
+    <link rel="stylesheet" href="h5p/libraries/H5P.FontAwesome-4.5/h5p-font-awesome.min.css">
+    <link rel="stylesheet" href="h5p/libraries/H5P.JoubelUI-1.3/css/joubel-ui.css">
+    <link rel="stylesheet" href="h5p/libraries/H5P.Transition-1.0/transition.css">
+    <link rel="stylesheet" href="h5p/libraries/H5P.FontIcons-1.0/styles/h5p-font-icons.css">
+    
+    <script src="h5p/libraries/H5P.jQuery-1.1/js/jquery.js"><\/script>
+    <script src="h5p/libraries/H5P.EventDispatcher-1.0/scripts/event-dispatcher.js"><\/script>
+    <script src="h5p/libraries/H5P.JoubelUI-1.3/js/joubel-ui.js"><\/script>
+    <script src="h5p/libraries/H5P.Transition-1.0/transition.js"><\/script>
+    
     <style>
         body, html {
             margin: 0;
             padding: 0;
             width: 100%;
             height: 100%;
-            overflow: hidden;
+            overflow: auto;
+            background: #fafafa;
         }
-        #h5p-container {
-            width: 100%;
-            height: 100vh;
+        .h5p-container {
+            margin: 20px auto;
+            max-width: 100%;
         }
-        iframe {
-            width: 100%;
-            height: 100%;
-            border: none;
+        .h5p-iframe-wrapper {
+            background: #DDD;
         }
     </style>
 </head>
 <body>
-    <div id="h5p-container">
-        <iframe src="content/index.html" id="h5p-frame"></iframe>
+    <div class="h5p-container">
+        <div id="h5p-content" class="h5p-content" data-content-id="1"></div>
     </div>
+    
+    <script src="h5pintegration.js"><\/script>
+    
+    <!-- H5P Library files -->
+    ${generateLibraryIncludes(h5pJson)}
+    
     <script>
         // Initialize SCORM
         window.onload = function() {
             initializeSCORM();
             
-            // Listen for H5P events
-            window.addEventListener('message', function(event) {
-                if (event.data && event.data.action) {
-                    switch(event.data.action) {
-                        case 'h5p-set-finished':
-                            setSCORMComplete();
-                            break;
-                        case 'h5p-set-score':
-                            if (event.data.score !== undefined && event.data.maxScore !== undefined) {
-                                setSCORMScore(event.data.score, event.data.maxScore);
+            // Initialize H5P
+            if (window.H5P && window.H5P.init) {
+                H5P.init();
+                
+                // Listen for H5P completion
+                H5P.externalDispatcher.on('xAPI', function(event) {
+                    if (event.data.statement) {
+                        var statement = event.data.statement;
+                        var verb = statement.verb;
+                        
+                        if (verb && verb.id) {
+                            if (verb.id.includes('completed') || verb.id.includes('answered')) {
+                                setSCORMComplete();
+                                
+                                // Check for score
+                                if (statement.result && statement.result.score) {
+                                    var score = statement.result.score.raw || 0;
+                                    var maxScore = statement.result.score.max || 100;
+                                    setSCORMScore(score, maxScore);
+                                }
                             }
-                            break;
+                        }
                     }
-                }
-            });
+                });
+            }
         };
         
         window.onbeforeunload = function() {
@@ -505,7 +545,10 @@ function initializeSCORM() {
             initialized = true;
             api.LMSSetValue("cmi.core.lesson_status", "incomplete");
             api.LMSCommit("");
+            console.log("SCORM initialized successfully");
         }
+    } else {
+        console.log("SCORM API not found - running in standalone mode");
     }
 }
 
@@ -514,6 +557,7 @@ function setSCORMComplete() {
     if (api != null && initialized) {
         api.LMSSetValue("cmi.core.lesson_status", "completed");
         api.LMSCommit("");
+        console.log("SCORM status set to completed");
     }
 }
 
@@ -524,7 +568,6 @@ function setSCORMScore(score, maxScore) {
         api.LMSSetValue("cmi.core.score.raw", score.toString());
         api.LMSSetValue("cmi.core.score.max", maxScore.toString());
         api.LMSSetValue("cmi.core.score.min", "0");
-        api.LMSCommit("");
         
         // Set pass/fail based on 70% threshold
         if (scaledScore >= 70) {
@@ -533,6 +576,7 @@ function setSCORMScore(score, maxScore) {
             api.LMSSetValue("cmi.core.lesson_status", "failed");
         }
         api.LMSCommit("");
+        console.log("SCORM score set: " + score + "/" + maxScore);
     }
 }
 
@@ -541,19 +585,157 @@ function terminateSCORM() {
     if (api != null && initialized) {
         api.LMSFinish("");
         initialized = false;
+        console.log("SCORM terminated");
     }
 }`;
         }
 
+        function createH5PIntegration(h5pJson, contentJson) {
+            return `// H5P Integration
+var H5PIntegration = {
+    baseUrl: '.',
+    url: 'h5p',
+    postUserStatistics: false,
+    ajax: {
+        setFinished: false,
+        contentUserData: false
+    },
+    saveFreq: false,
+    siteUrl: '.',
+    l10n: {
+        H5P: {
+            fullscreen: 'Fullscreen',
+            disableFullscreen: 'Disable fullscreen',
+            download: 'Download',
+            copyrights: 'Rights of use',
+            embed: 'Embed',
+            size: 'Size',
+            showAdvanced: 'Show advanced',
+            hideAdvanced: 'Hide advanced',
+            advancedHelp: 'Include this script on your website if you want dynamic sizing of the embedded content:',
+            copyrightInformation: 'Rights of use',
+            close: 'Close',
+            title: 'Title',
+            author: 'Author',
+            year: 'Year',
+            source: 'Source',
+            license: 'License',
+            thumbnail: 'Thumbnail',
+            noCopyrights: 'No copyright information available for this content.',
+            reuse: 'Reuse',
+            reuseContent: 'Reuse Content',
+            reuseDescription: 'Reuse this content.',
+            downloadDescription: 'Download this content as a H5P file.',
+            copyrightsDescription: 'View copyright information for this content.',
+            embedDescription: 'View the embed code for this content.',
+            h5pDescription: 'Visit H5P.org to check out more cool content.',
+            contentChanged: 'This content has changed since you last used it.',
+            startingOver: 'You\\'ll be starting over.',
+            by: 'by',
+            showMore: 'Show more',
+            showLess: 'Show less',
+            subLevel: 'Sublevel'
+        }
+    },
+    contents: {
+        'cid-1': {
+            library: '${h5pJson.mainLibrary}',
+            jsonContent: JSON.stringify(${JSON.stringify(contentJson)}),
+            fullScreen: ${h5pJson.embedTypes && h5pJson.embedTypes.includes('iframe') ? 'true' : 'false'},
+            exportUrl: false,
+            embedCode: false,
+            resizeCode: false,
+            url: false,
+            title: '${escapeHtml(h5pJson.title || 'H5P Content')}',
+            contentUserData: false,
+            displayOptions: {
+                frame: false,
+                export: false,
+                embed: false,
+                copyright: false,
+                icon: false
+            }
+        }
+    }
+};
+
+// H5P Core
+var H5P = H5P || {};
+
+H5P.jQuery = jQuery.noConflict(true);
+H5P.instances = [];
+
+// Simplified H5P initialization
+H5P.init = function() {
+    H5P.jQuery('.h5p-content').each(function() {
+        var $element = H5P.jQuery(this);
+        var contentId = $element.data('content-id');
+        var contentData = H5PIntegration.contents['cid-' + contentId];
+        
+        if (contentData) {
+            var library = contentData.library.split(' ');
+            var machineName = library[0];
+            var majorVersion = library[1].split('.')[0];
+            var minorVersion = library[1].split('.')[1];
+            
+            // Create instance
+            var content = JSON.parse(contentData.jsonContent);
+            
+            // Initialize the content type
+            if (window[machineName]) {
+                var instance = new window[machineName](content, contentId);
+                instance.attach($element);
+                H5P.instances.push(instance);
+            }
+        }
+    });
+};`;
+        }
+
         function generateFileList(h5pJson) {
-            // Generiere eine Liste aller H5P Bibliotheken und Dateien
             let fileList = '';
+            
+            // Core H5P files
+            fileList += '<file href="h5p/icon.svg"/>\n            ';
+            
+            // Add all library files
             if (h5pJson.preloadedDependencies) {
                 h5pJson.preloadedDependencies.forEach(dep => {
-                    fileList += `<file href="libraries/${dep.machineName}-${dep.majorVersion}.${dep.minorVersion}/"/>\n            `;
+                    const libFolder = `${dep.machineName}-${dep.majorVersion}.${dep.minorVersion}`;
+                    fileList += `<file href="h5p/libraries/${libFolder}/"/>\n            `;
                 });
             }
+            
+            // Content files
+            fileList += '<file href="h5p/content/"/>';
+            
             return fileList;
+        }
+
+        function generateLibraryIncludes(h5pJson) {
+            let includes = '';
+            
+            if (h5pJson.preloadedDependencies) {
+                // Sort dependencies to ensure correct loading order
+                const sorted = h5pJson.preloadedDependencies.sort((a, b) => {
+                    // Load H5P core libraries first
+                    if (a.machineName.startsWith('H5P.') && !b.machineName.startsWith('H5P.')) return -1;
+                    if (!a.machineName.startsWith('H5P.') && b.machineName.startsWith('H5P.')) return 1;
+                    return 0;
+                });
+                
+                sorted.forEach(dep => {
+                    const libPath = `h5p/libraries/${dep.machineName}-${dep.majorVersion}.${dep.minorVersion}`;
+                    
+                    // Add CSS files
+                    includes += `    <link rel="stylesheet" href="${libPath}/styles/${dep.machineName.toLowerCase().replace(/\./g, '-')}.css">\n`;
+                    
+                    // Add JS files
+                    includes += `    <script src="${libPath}/scripts/${dep.machineName.toLowerCase().replace(/\./g, '-')}.js"><\/script>\n`;
+                });
+            }
+            
+            return includes;
         }
 
         function escapeXml(unsafe) {
@@ -563,6 +745,18 @@ function terminateSCORM() {
                     case '>': return '&gt;';
                     case '&': return '&amp;';
                     case '\'': return '&apos;';
+                    case '"': return '&quot;';
+                }
+            });
+        }
+
+        function escapeHtml(unsafe) {
+            return unsafe.replace(/[<>&'"]/g, function (c) {
+                switch (c) {
+                    case '<': return '&lt;';
+                    case '>': return '&gt;';
+                    case '&': return '&amp;';
+                    case '\'': return '&#39;';
                     case '"': return '&quot;';
                 }
             });
