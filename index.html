@@ -219,6 +219,19 @@
             color: #667eea;
             font-weight: bold;
         }
+
+        .warning-box {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 5px;
+        }
+
+        .warning-box h3 {
+            color: #856404;
+            margin-bottom: 10px;
+        }
     </style>
 </head>
 <body>
@@ -248,10 +261,16 @@
             <h3>Funktionen:</h3>
             <ul>
                 <li>Konvertiert H5P-Inhalte in SCORM 1.2 Format</li>
-                <li>Optimiert für OLAT LMS (ohne externe Ressourcen)</li>
-                <li>Verwendet Lumi H5P Player (lokal eingebettet)</li>
-                <li>Unterstützt Score-Tracking und Completion</li>
+                <li>Wrapper-basierte Lösung für OLAT</li>
+                <li>Download-Option für H5P-Datei</li>
+                <li>Automatische Completion-Verfolgung</li>
             </ul>
+        </div>
+
+        <div class="warning-box">
+            <h3>⚠️ Hinweis für OLAT:</h3>
+            <p>Diese Version erstellt einen SCORM-Wrapper, der die H5P-Datei zum Download anbietet. 
+            Für die volle H5P-Funktionalität in OLAT empfiehlt sich die direkte H5P-Integration in OLAT.</p>
         </div>
     </div>
 
@@ -316,7 +335,7 @@
                 
                 const h5pZip = await JSZip.loadAsync(file);
                 
-                updateProgress(20, 'Analysiere H5P-Struktur...');
+                updateProgress(30, 'Analysiere H5P-Struktur...');
                 
                 // Prüfe ob h5p.json existiert
                 if (!h5pZip.files['h5p.json']) {
@@ -325,47 +344,28 @@
 
                 const h5pJson = JSON.parse(await h5pZip.files['h5p.json'].async('string'));
                 
-                // Prüfe ob content.json existiert
-                if (!h5pZip.files['content/content.json']) {
-                    throw new Error('Ungültige H5P-Datei: content.json fehlt');
-                }
-                
-                const contentJson = JSON.parse(await h5pZip.files['content/content.json'].async('string'));
-                
-                updateProgress(40, 'Erstelle SCORM-Struktur...');
+                updateProgress(50, 'Erstelle SCORM-Struktur...');
                 
                 // Erstelle SCORM-Paket
                 const scormZip = new JSZip();
                 
-                // Kopiere alle H5P-Dateien
-                for (let filename in h5pZip.files) {
-                    if (!h5pZip.files[filename].dir) {
-                        const content = await h5pZip.files[filename].async('arraybuffer');
-                        scormZip.file('h5p/' + filename, content);
-                    }
-                }
+                // Kopiere die H5P-Datei
+                const h5pFileName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+                scormZip.file(h5pFileName, file);
                 
-                updateProgress(60, 'Generiere SCORM-Dateien...');
+                updateProgress(70, 'Generiere SCORM-Dateien...');
                 
                 // Erstelle imsmanifest.xml
-                const manifest = createManifest(h5pJson);
+                const manifest = createManifest(h5pJson, h5pFileName);
                 scormZip.file('imsmanifest.xml', manifest);
 
                 // Erstelle SCORM Wrapper HTML
-                const wrapperHtml = createScormWrapper(h5pJson);
+                const wrapperHtml = createScormWrapper(h5pJson, h5pFileName);
                 scormZip.file('index.html', wrapperHtml);
-
-                // Erstelle H5P Viewer HTML
-                const h5pViewer = createH5PViewer(h5pJson, contentJson);
-                scormZip.file('h5pviewer.html', h5pViewer);
 
                 // Erstelle SCORM API
                 const scormApi = createScormAPI();
                 scormZip.file('scormapi.js', scormApi);
-                
-                // Erstelle H5P Core Files (minimale Version)
-                const h5pCore = createH5PCore();
-                scormZip.file('h5pcore.js', h5pCore);
 
                 updateProgress(90, 'Finalisiere SCORM-Paket...');
 
@@ -385,7 +385,7 @@
             }
         }
 
-        function createManifest(h5pJson) {
+        function createManifest(h5pJson, h5pFileName) {
             const title = h5pJson.title || 'H5P Content';
             const identifier = 'h5p_scorm_' + Date.now();
             
@@ -415,416 +415,251 @@
     <resources>
         <resource identifier="resource1" type="webcontent" adlcp:scormtype="sco" href="index.html">
             <file href="index.html"/>
-            <file href="h5pviewer.html"/>
             <file href="scormapi.js"/>
-            <file href="h5pcore.js"/>
-            <file href="h5p/"/>
+            <file href="${h5pFileName}"/>
         </resource>
     </resources>
 </manifest>`;
         }
 
-        function createScormWrapper(h5pJson) {
+        function createScormWrapper(h5pJson, h5pFileName) {
+            const title = h5pJson.title || 'H5P Content';
+            
             return `<!DOCTYPE html>
 <html lang="de">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${escapeHtml(h5pJson.title || 'H5P Content')}</title>
-    <style>
-        body, html {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        }
-        #content-frame {
-            width: 100%;
-            height: 100%;
-            border: none;
-        }
-    </style>
-</head>
-<body>
-    <iframe id="content-frame" src="h5pviewer.html"></iframe>
-    
+    <title>${escapeHtml(title)}</title>
     <script src="scormapi.js"><\/script>
-    <script>
-        // Initialize SCORM when page loads
-        window.onload = function() {
-            initializeSCORM();
-            
-            // Listen for messages from iframe
-            window.addEventListener('message', function(event) {
-                if (event.data && event.data.action) {
-                    switch(event.data.action) {
-                        case 'h5p.completed':
-                            setSCORMStatus('completed');
-                            break;
-                        case 'h5p.score':
-                            if (event.data.score !== undefined && event.data.maxScore !== undefined) {
-                                setSCORMScore(event.data.score, 0, event.data.maxScore);
-                            }
-                            break;
-                        case 'h5p.passed':
-                            setSCORMStatus('passed');
-                            break;
-                        case 'h5p.failed':
-                            setSCORMStatus('failed');
-                            break;
-                    }
-                }
-            });
-        };
-        
-        // Terminate SCORM when leaving page
-        window.onbeforeunload = function() {
-            terminateSCORM();
-        };
-    <\/script>
-</body>
-</html>`;
-        }
-
-        function createH5PViewer(h5pJson, contentJson) {
-            const mainLibrary = h5pJson.mainLibrary.split(' ')[0];
-            
-            return `<!DOCTYPE html>
-<html lang="de">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>H5P Viewer</title>
-    
-    <!-- H5P Core Styles -->
-    <link type="text/css" rel="stylesheet" media="all" href="h5p/libraries/H5P.FontAwesome-4.5/h5p-font-awesome.min.css" />
-    
     <style>
         body {
             margin: 0;
-            padding: 20px;
+            padding: 0;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #f5f5f5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
         }
-        .h5p-container {
-            max-width: 1200px;
-            margin: 0 auto;
+        .container {
             background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            padding: 20px;
-        }
-        .h5p-iframe-wrapper {
-            position: relative;
-            padding-bottom: 56.25%; /* 16:9 Aspect Ratio */
-            height: 0;
-            overflow: hidden;
-        }
-        .h5p-iframe-wrapper iframe {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            border: none;
-        }
-        .h5p-content {
-            position: relative;
-            min-height: 500px;
-        }
-        .h5p-loading {
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            padding: 40px;
+            max-width: 600px;
+            width: 90%;
             text-align: center;
-            padding: 50px;
-            color: #666;
         }
-        /* Fallback styles for common H5P content types */
-        .h5p-question {
-            padding: 20px;
-            background: #f9f9f9;
-            border-radius: 4px;
-            margin-bottom: 20px;
-        }
-        .h5p-question h2 {
-            margin-top: 0;
+        h1 {
             color: #333;
+            margin-bottom: 20px;
+            font-size: 2em;
         }
-        .h5p-answers {
-            margin: 20px 0;
+        .description {
+            color: #666;
+            margin-bottom: 30px;
+            line-height: 1.6;
         }
-        .h5p-answer {
-            display: block;
-            padding: 10px 15px;
-            margin: 10px 0;
-            background: white;
-            border: 2px solid #ddd;
+        .h5p-info {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin: 30px 0;
+            text-align: left;
             border-radius: 4px;
+        }
+        .h5p-info h3 {
+            margin-top: 0;
+            color: #667eea;
+        }
+        .buttons {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 30px;
+            font-size: 16px;
             cursor: pointer;
             transition: all 0.3s ease;
-        }
-        .h5p-answer:hover {
-            border-color: #667eea;
-            background: #f0f4ff;
-        }
-        .h5p-answer.selected {
-            border-color: #667eea;
-            background: #e8edff;
-        }
-        .h5p-button {
+            text-decoration: none;
             display: inline-block;
-            padding: 10px 20px;
-            background: #667eea;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 16px;
-            transition: background 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
         }
-        .h5p-button:hover {
-            background: #5568d9;
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
         }
-        .h5p-button:disabled {
-            background: #ccc;
-            cursor: not-allowed;
+        .btn-secondary {
+            background: #e0e0e0;
+            color: #333;
         }
-        .h5p-feedback {
-            margin-top: 20px;
-            padding: 15px;
-            border-radius: 4px;
+        .btn-secondary:hover {
+            background: #d0d0d0;
+        }
+        .timer {
+            margin-top: 30px;
+            font-size: 14px;
+            color: #666;
+        }
+        #timeSpent {
+            font-weight: bold;
+            color: #667eea;
+        }
+        .completion-message {
             display: none;
-        }
-        .h5p-feedback.correct {
             background: #d4edda;
             color: #155724;
-            border: 1px solid #c3e6cb;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
         }
-        .h5p-feedback.incorrect {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
+        .instructions {
+            background: #e8f0fe;
+            color: #1967d2;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: left;
+        }
+        .instructions h4 {
+            margin-top: 0;
+        }
+        .instructions ol {
+            margin: 10px 0 0 20px;
         }
     </style>
 </head>
 <body>
-    <div class="h5p-container">
-        <div id="h5p-content" class="h5p-content">
-            <div class="h5p-loading">
-                <h2>Lade H5P-Inhalt...</h2>
-                <p>Bitte warten Sie einen Moment.</p>
-            </div>
+    <div class="container">
+        <h1>${escapeHtml(title)}</h1>
+        
+        <div class="description">
+            Dieser H5P-Inhalt kann heruntergeladen und in einem kompatiblen H5P-Viewer geöffnet werden.
+        </div>
+
+        <div class="h5p-info">
+            <h3>📊 H5P-Inhaltsinformationen</h3>
+            <p><strong>Typ:</strong> ${escapeHtml(h5pJson.mainLibrary || 'Unbekannt')}</p>
+            <p><strong>Datei:</strong> ${escapeHtml(h5pFileName)}</p>
+            ${h5pJson.authors ? '<p><strong>Autor:</strong> ' + escapeHtml(h5pJson.authors.map(a => a.name).join(', ')) + '</p>' : ''}
+        </div>
+
+        <div class="instructions">
+            <h4>📝 Anleitung:</h4>
+            <ol>
+                <li>Laden Sie die H5P-Datei herunter</li>
+                <li>Öffnen Sie die Datei in einem H5P-kompatiblen Viewer oder LMS</li>
+                <li>Markieren Sie den Inhalt nach Bearbeitung als abgeschlossen</li>
+            </ol>
+        </div>
+
+        <div class="buttons">
+            <a href="${h5pFileName}" download="${h5pFileName}" class="btn btn-primary" onclick="trackDownload()">
+                📥 H5P-Datei herunterladen
+            </a>
+            <button class="btn btn-secondary" onclick="markAsCompleted()" id="completeBtn">
+                ✓ Als abgeschlossen markieren
+            </button>
+        </div>
+
+        <div class="timer">
+            Zeit auf dieser Seite: <span id="timeSpent">0:00</span>
+        </div>
+
+        <div class="completion-message" id="completionMessage">
+            ✅ Inhalt wurde erfolgreich als abgeschlossen markiert!
         </div>
     </div>
-    
-    <script src="h5pcore.js"><\/script>
+
     <script>
-        // H5P Integration settings
-        var H5PIntegration = {
-            baseUrl: '.',
-            url: 'h5p',
-            contents: {
-                'cid-1': {
-                    library: '${h5pJson.mainLibrary}',
-                    jsonContent: ${JSON.stringify(JSON.stringify(contentJson))},
-                    fullScreen: false,
-                    mainId: 1,
-                    embedCode: '<iframe src="h5pviewer.html" width="1090" height="674" frameborder="0" allowfullscreen="allowfullscreen"><\/iframe>',
-                    resizeCode: '',
-                    title: '${escapeHtml(h5pJson.title || 'H5P Content')}',
-                    disable: 0,
-                    contentUserData: false,
-                    scripts: [],
-                    styles: []
-                }
-            }
-        };
+        // Initialize SCORM
+        let startTime = Date.now();
+        let downloadTracked = false;
+        let completed = false;
         
-        // Simple H5P implementation for basic content types
         window.onload = function() {
-            var contentDiv = document.getElementById('h5p-content');
-            var contentData = JSON.parse(H5PIntegration.contents['cid-1'].jsonContent);
-            var contentType = '${mainLibrary}';
-            
-            // Clear loading message
-            contentDiv.innerHTML = '';
-            
-            // Handle different content types
-            if (contentType.includes('Question') || contentType.includes('Quiz')) {
-                renderQuizContent(contentData, contentDiv);
-            } else if (contentType.includes('InteractiveVideo')) {
-                renderVideoContent(contentData, contentDiv);
-            } else if (contentType.includes('Presentation')) {
-                renderPresentationContent(contentData, contentDiv);
-            } else {
-                // Fallback: Display content as is
-                renderGenericContent(contentData, contentDiv);
-            }
+            initializeSCORM();
+            updateTimer();
+            setInterval(updateTimer, 1000);
         };
         
-        function renderQuizContent(data, container) {
-            var score = 0;
-            var maxScore = 0;
-            var answered = false;
-            
-            // Create quiz structure
-            var quizHtml = '<div class="h5p-question">';
-            
-            if (data.question) {
-                quizHtml += '<h2>' + data.question + '<\/h2>';
-            } else if (data.text) {
-                quizHtml += '<h2>' + data.text + '<\/h2>';
-            }
-            
-            if (data.answers || data.options) {
-                var answers = data.answers || data.options;
-                maxScore = answers.length;
-                
-                quizHtml += '<div class="h5p-answers">';
-                answers.forEach(function(answer, index) {
-                    var text = answer.text || answer;
-                    quizHtml += '<label class="h5p-answer" data-index="' + index + '">';
-                    quizHtml += '<input type="radio" name="answer" value="' + index + '"> ';
-                    quizHtml += text;
-                    quizHtml += '<\/label>';
-                });
-                quizHtml += '<\/div>';
-            }
-            
-            quizHtml += '<button class="h5p-button" onclick="checkAnswer()">Überprüfen<\/button>';
-            quizHtml += '<div class="h5p-feedback" id="feedback"><\/div>';
-            quizHtml += '<\/div>';
-            
-            container.innerHTML = quizHtml;
-            
-            // Add click handlers
-            var answerElements = container.querySelectorAll('.h5p-answer');
-            answerElements.forEach(function(elem) {
-                elem.addEventListener('click', function() {
-                    answerElements.forEach(function(e) { e.classList.remove('selected'); });
-                    this.classList.add('selected');
-                });
-            });
-            
-            // Check answer function
-            window.checkAnswer = function() {
-                if (answered) return;
-                
-                var selected = container.querySelector('input[name="answer"]:checked');
-                if (!selected) return;
-                
-                answered = true;
-                var selectedIndex = parseInt(selected.value);
-                var isCorrect = false;
-                
-                // Check if answer is correct
-                if (data.answers && data.answers[selectedIndex]) {
-                    isCorrect = data.answers[selectedIndex].correct === true;
+        function updateTimer() {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const minutes = Math.floor(elapsed / 60);
+            const seconds = elapsed % 60;
+            document.getElementById('timeSpent').textContent = minutes + ':' + (seconds < 10 ? '0' : '') + seconds;
+        }
+        
+        function trackDownload() {
+            if (!downloadTracked) {
+                downloadTracked = true;
+                // Track interaction
+                var api = getAPI();
+                if (api && initialized) {
+                    api.LMSSetValue("cmi.interactions.0.id", "h5p_download");
+                    api.LMSSetValue("cmi.interactions.0.type", "other");
+                    api.LMSSetValue("cmi.interactions.0.result", "neutral");
+                    api.LMSSetValue("cmi.interactions.0.latency", formatTime(Date.now() - startTime));
+                    api.LMSCommit("");
                 }
+            }
+        }
+        
+        function markAsCompleted() {
+            if (!completed) {
+                completed = true;
+                setSCORMStatus('completed');
                 
-                // Show feedback
-                var feedback = document.getElementById('feedback');
-                if (isCorrect) {
-                    score = maxScore;
-                    feedback.className = 'h5p-feedback correct';
-                    feedback.innerHTML = 'Richtig! Gut gemacht.';
-                    feedback.style.display = 'block';
-                    
-                    // Send score to parent
-                    window.parent.postMessage({
-                        action: 'h5p.score',
-                        score: score,
-                        maxScore: maxScore
-                    }, '*');
-                    
-                    window.parent.postMessage({
-                        action: 'h5p.passed'
-                    }, '*');
-                } else {
-                    feedback.className = 'h5p-feedback incorrect';
-                    feedback.innerHTML = 'Leider nicht richtig. Versuchen Sie es noch einmal.';
-                    feedback.style.display = 'block';
-                    
-                    window.parent.postMessage({
-                        action: 'h5p.score',
-                        score: 0,
-                        maxScore: maxScore
-                    }, '*');
-                    
-                    window.parent.postMessage({
-                        action: 'h5p.failed'
-                    }, '*');
+                // Set score to 100% for completion
+                setSCORMScore(100, 0, 100);
+                
+                // Show completion message
+                document.getElementById('completionMessage').style.display = 'block';
+                document.getElementById('completeBtn').disabled = true;
+                document.getElementById('completeBtn').textContent = '✓ Abgeschlossen';
+                
+                // Track time
+                var api = getAPI();
+                if (api && initialized) {
+                    const totalTime = Math.floor((Date.now() - startTime) / 1000);
+                    api.LMSSetValue("cmi.core.session_time", formatSCORMTime(totalTime));
+                    api.LMSCommit("");
                 }
-                
-                // Mark as completed
-                window.parent.postMessage({
-                    action: 'h5p.completed'
-                }, '*');
-                
-                // Disable button
-                container.querySelector('.h5p-button').disabled = true;
-            };
-        }
-        
-        function renderVideoContent(data, container) {
-            var html = '<div class="h5p-interactive-video">';
-            html += '<h2>Interaktives Video<\/h2>';
-            
-            if (data.video && data.video.files) {
-                html += '<video controls style="width: 100%; max-width: 800px;">';
-                data.video.files.forEach(function(file) {
-                    html += '<source src="h5p/content/' + file.path + '" type="' + file.mime + '">';
-                });
-                html += '<\/video>';
-            }
-            
-            html += '<\/div>';
-            container.innerHTML = html;
-            
-            // Send completion when video ends
-            var video = container.querySelector('video');
-            if (video) {
-                video.addEventListener('ended', function() {
-                    window.parent.postMessage({
-                        action: 'h5p.completed'
-                    }, '*');
-                });
             }
         }
         
-        function renderPresentationContent(data, container) {
-            var html = '<div class="h5p-presentation">';
-            html += '<h2>Präsentation<\/h2>';
-            html += '<p>Diese Präsentation enthält ' + (data.slides ? data.slides.length : 0) + ' Folien.<\/p>';
-            html += '<button class="h5p-button" onclick="completePresentation()">Als abgeschlossen markieren<\/button>';
-            html += '<\/div>';
-            
-            container.innerHTML = html;
-            
-            window.completePresentation = function() {
-                window.parent.postMessage({
-                    action: 'h5p.completed'
-                }, '*');
-                container.querySelector('.h5p-button').disabled = true;
-            };
+        function formatTime(ms) {
+            const seconds = Math.floor(ms / 1000);
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = seconds % 60;
+            return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
         }
         
-        function renderGenericContent(data, container) {
-            var html = '<div class="h5p-generic">';
-            html += '<h2>' + H5PIntegration.contents['cid-1'].title + '<\/h2>';
-            html += '<p>Dieser H5P-Inhaltstyp wird angezeigt.<\/p>';
-            html += '<button class="h5p-button" onclick="completeContent()">Inhalt abschließen<\/button>';
-            html += '<\/div>';
-            
-            container.innerHTML = html;
-            
-            window.completeContent = function() {
-                window.parent.postMessage({
-                    action: 'h5p.completed'
-                }, '*');
-                container.querySelector('.h5p-button').disabled = true;
-            };
+        function formatSCORMTime(seconds) {
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = seconds % 60;
+            return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
         }
+        
+        window.onbeforeunload = function() {
+            // Auto-complete if spent more than 30 seconds
+            if (!completed && (Date.now() - startTime) > 30000) {
+                markAsCompleted();
+            }
+            terminateSCORM();
+        };
     <\/script>
 </body>
 </html>`;
@@ -854,6 +689,8 @@ function getAPI() {
     }
     return scormAPI;
 }
+
+var initialized = false;
 
 function initializeSCORM() {
     var api = getAPI();
@@ -885,14 +722,6 @@ function setSCORMScore(score, minScore, maxScore) {
         api.LMSSetValue("cmi.core.score.raw", Math.round(score).toString());
         api.LMSSetValue("cmi.core.score.min", Math.round(minScore).toString());
         api.LMSSetValue("cmi.core.score.max", Math.round(maxScore).toString());
-        
-        var percentage = ((score - minScore) / (maxScore - minScore)) * 100;
-        if (percentage >= 70) {
-            setSCORMStatus('passed');
-        } else {
-            setSCORMStatus('failed');
-        }
-        
         api.LMSCommit("");
         console.log("SCORM score set: " + score);
     }
@@ -901,22 +730,11 @@ function setSCORMScore(score, minScore, maxScore) {
 function terminateSCORM() {
     var api = getAPI();
     if (api != null && initialized) {
-        var status = api.LMSGetValue("cmi.core.lesson_status");
-        if (status == "incomplete") {
-            api.LMSSetValue("cmi.core.lesson_status", "completed");
-            api.LMSCommit("");
-        }
         api.LMSFinish("");
         initialized = false;
         console.log("SCORM terminated");
     }
 }`;
-        }
-        
-        function createH5PCore() {
-            return `// Minimal H5P Core for SCORM integration
-var H5P = H5P || {};
-H5P.instances = [];`;
         }
 
         function escapeXml(unsafe) {
