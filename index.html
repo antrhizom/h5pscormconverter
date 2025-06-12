@@ -249,8 +249,8 @@
             <ul>
                 <li>Konvertiert H5P-Inhalte in SCORM 1.2 Format</li>
                 <li>Optimiert für OLAT LMS</li>
-                <li>Verwendet H5P Standalone Player</li>
-                <li>Unterstützt alle H5P-Inhaltstypen</li>
+                <li>Verwendet iframe-basierte Integration</li>
+                <li>Unterstützt Score-Tracking</li>
             </ul>
         </div>
     </div>
@@ -316,7 +316,7 @@
                 
                 const h5pZip = await JSZip.loadAsync(file);
                 
-                updateProgress(20, 'Analysiere H5P-Struktur...');
+                updateProgress(30, 'Analysiere H5P-Struktur...');
                 
                 // Prüfe ob h5p.json existiert
                 if (!h5pZip.files['h5p.json']) {
@@ -324,15 +324,6 @@
                 }
 
                 const h5pJson = JSON.parse(await h5pZip.files['h5p.json'].async('string'));
-                
-                updateProgress(30, 'Lade H5P Standalone Player...');
-                
-                // Lade H5P Standalone Player von CDN
-                const h5pStandaloneResponse = await fetch('https://cdn.jsdelivr.net/gh/tunapanda/h5p-standalone@latest/dist/main.bundle.js');
-                const h5pStandaloneJS = await h5pStandaloneResponse.text();
-                
-                const h5pStandaloneCSSResponse = await fetch('https://cdn.jsdelivr.net/gh/tunapanda/h5p-standalone@latest/dist/styles/h5p.css');
-                const h5pStandaloneCSS = await h5pStandaloneCSSResponse.text();
                 
                 updateProgress(50, 'Erstelle SCORM-Struktur...');
                 
@@ -342,15 +333,6 @@
                 // Kopiere die original H5P-Datei
                 scormZip.file('content.h5p', file);
                 
-                // Extrahiere nur die notwendigen Dateien für die direkte Anzeige
-                // Kopiere alle H5P-Inhalte in workspace Ordner
-                for (let filename in h5pZip.files) {
-                    if (!h5pZip.files[filename].dir) {
-                        const content = await h5pZip.files[filename].async('arraybuffer');
-                        scormZip.file('workspace/' + filename, content);
-                    }
-                }
-
                 updateProgress(70, 'Generiere SCORM-Dateien...');
                 
                 // Erstelle imsmanifest.xml
@@ -361,13 +343,13 @@
                 const wrapperHtml = createScormWrapper(h5pJson);
                 scormZip.file('index.html', wrapperHtml);
 
+                // Erstelle H5P Player HTML
+                const h5pPlayer = createH5PPlayer(h5pJson);
+                scormZip.file('h5pplayer.html', h5pPlayer);
+
                 // Erstelle SCORM API
                 const scormApi = createScormAPI();
                 scormZip.file('scormapi.js', scormApi);
-                
-                // Füge H5P Standalone Player hinzu
-                scormZip.file('h5p-standalone.js', h5pStandaloneJS);
-                scormZip.file('h5p-standalone.css', h5pStandaloneCSS);
 
                 updateProgress(90, 'Finalisiere SCORM-Paket...');
 
@@ -417,11 +399,9 @@
     <resources>
         <resource identifier="resource1" type="webcontent" adlcp:scormtype="sco" href="index.html">
             <file href="index.html"/>
+            <file href="h5pplayer.html"/>
             <file href="scormapi.js"/>
-            <file href="h5p-standalone.js"/>
-            <file href="h5p-standalone.css"/>
             <file href="content.h5p"/>
-            <file href="workspace/"/>
         </resource>
     </resources>
 </manifest>`;
@@ -435,7 +415,111 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${escapeHtml(h5pJson.title || 'H5P Content')}</title>
     <script src="scormapi.js"><\/script>
-    <link rel="stylesheet" href="h5p-standalone.css">
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #fafafa;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        #h5p-iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="loading" id="loading">
+        <h2>Lade H5P-Inhalt...</h2>
+        <p>Bitte warten...</p>
+    </div>
+    
+    <iframe id="h5p-iframe" src="h5pplayer.html" style="display: none;"></iframe>
+    
+    <script>
+        // Initialize SCORM
+        var scormInitialized = false;
+        var completionSent = false;
+        
+        window.onload = function() {
+            // Initialize SCORM
+            initializeSCORM();
+            scormInitialized = true;
+            
+            // Setup iframe
+            var iframe = document.getElementById('h5p-iframe');
+            var loading = document.getElementById('loading');
+            
+            // Show iframe when loaded
+            iframe.onload = function() {
+                loading.style.display = 'none';
+                iframe.style.display = 'block';
+                
+                // Listen for messages from iframe
+                window.addEventListener('message', handleMessage);
+            };
+        };
+        
+        function handleMessage(event) {
+            if (!scormInitialized) return;
+            
+            var data = event.data;
+            
+            if (data.type === 'h5p-score') {
+                // Handle score
+                if (data.score !== undefined && data.maxScore !== undefined) {
+                    setSCORMScore(data.score, 0, data.maxScore);
+                }
+            } else if (data.type === 'h5p-completed') {
+                // Handle completion
+                if (!completionSent) {
+                    setSCORMStatus('completed');
+                    completionSent = true;
+                }
+            } else if (data.type === 'h5p-passed') {
+                // Handle passed
+                setSCORMStatus('passed');
+                completionSent = true;
+            } else if (data.type === 'h5p-failed') {
+                // Handle failed
+                setSCORMStatus('failed');
+                completionSent = true;
+            }
+        }
+        
+        window.onbeforeunload = function() {
+            // Ensure at least completed status is set
+            if (!completionSent && scormInitialized) {
+                setSCORMStatus('completed');
+            }
+            terminateSCORM();
+        };
+    <\/script>
+</body>
+</html>`;
+        }
+
+        function createH5PPlayer(h5pJson) {
+            return `<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>H5P Player</title>
+    <script src="https://cdn.jsdelivr.net/gh/tunapanda/h5p-standalone@3.5.0/dist/main.bundle.js"><\/script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tunapanda/h5p-standalone@3.5.0/dist/styles/h5p.css">
     <style>
         body, html {
             margin: 0;
@@ -444,122 +528,109 @@
             height: 100%;
             overflow: auto;
             background: #fafafa;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
         #h5p-container {
-            margin: 20px auto;
-            max-width: 1200px;
-            min-height: 500px;
+            width: 100%;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
-        .loading {
-            text-align: center;
-            padding: 50px;
-            color: #666;
-        }
-        /* Fix für H5P Standalone Anzeige */
         .h5p-standalone {
             width: 100% !important;
-        }
-        .h5p-iframe-wrapper {
-            width: 100% !important;
+            max-width: 1200px;
         }
     </style>
 </head>
 <body>
-    <div id="h5p-container" class="loading">
-        <h2>Lade H5P-Inhalt...</h2>
-        <p>Bitte warten...</p>
-    </div>
+    <div id="h5p-container"></div>
     
-    <script src="h5p-standalone.js"><\/script>
     <script>
-        // Initialize SCORM
-        var scormInitialized = false;
-        
-        window.onload = function() {
-            // Initialize SCORM first
-            initializeSCORM();
-            scormInitialized = true;
-            
-            // Initialize H5P Standalone
+        // Wait for DOM ready
+        document.addEventListener('DOMContentLoaded', function() {
             const el = document.getElementById('h5p-container');
-            el.innerHTML = ''; // Clear loading message
-            el.className = ''; // Remove loading class
             
             const options = {
-                h5pJsonPath: './workspace',
-                frameJs: './h5p-standalone.js',
-                frameCss: './h5p-standalone.css'
+                h5pJsonPath: './content.h5p',
+                frameJs: 'https://cdn.jsdelivr.net/gh/tunapanda/h5p-standalone@3.5.0/dist/frame.bundle.js',
+                frameCss: 'https://cdn.jsdelivr.net/gh/tunapanda/h5p-standalone@3.5.0/dist/styles/h5p.css'
             };
             
             new H5PStandalone.H5P(el, options)
                 .then(function() {
                     console.log('H5P content loaded successfully');
                     
-                    // Set up message listener for xAPI events
-                    window.addEventListener('message', function(event) {
-                        if (event.data && event.data.statement) {
-                            handleXAPIStatement(event.data.statement);
-                        }
-                    });
-                    
-                    // Alternative: Check for H5P instance and attach listeners
+                    // Try to access H5P instance for event handling
                     setTimeout(function() {
                         if (window.H5P && window.H5P.instances && window.H5P.instances[0]) {
                             var instance = window.H5P.instances[0];
                             
                             // Listen for xAPI events
+                            H5P.externalDispatcher.on('xAPI', function(event) {
+                                handleXAPIEvent(event);
+                            });
+                            
+                            // Alternative event listener
                             if (instance.on) {
                                 instance.on('xAPI', function(event) {
-                                    if (event.data && event.data.statement) {
-                                        handleXAPIStatement(event.data.statement);
-                                    }
+                                    handleXAPIEvent(event);
+                                });
+                                
+                                instance.on('finish', function(event) {
+                                    sendMessage('h5p-completed', {});
                                 });
                             }
                         }
-                    }, 2000);
+                    }, 1000);
                 })
                 .catch(function(error) {
                     console.error('Error loading H5P content:', error);
-                    el.innerHTML = '<div style="color: red; padding: 20px;">Fehler beim Laden des H5P-Inhalts. Bitte versuchen Sie es erneut.</div>';
                 });
-        };
+        });
         
-        function handleXAPIStatement(statement) {
-            if (!scormInitialized) return;
-            
-            var verb = statement.verb;
-            if (verb && verb.id) {
-                // Check for completion
-                if (verb.id.includes('completed') || 
-                    verb.id.includes('passed') || 
-                    verb.id.includes('failed') ||
-                    verb.id.includes('answered')) {
-                    
-                    // Set score if available
+        function handleXAPIEvent(event) {
+            if (event.data && event.data.statement) {
+                var statement = event.data.statement;
+                var verb = statement.verb;
+                
+                if (verb && verb.id) {
+                    // Check for score
                     if (statement.result && statement.result.score) {
-                        var score = statement.result.score.raw || statement.result.score.scaled * 100 || 0;
+                        var score = statement.result.score.raw || 0;
                         var maxScore = statement.result.score.max || 100;
-                        var minScore = statement.result.score.min || 0;
-                        
-                        setSCORMScore(score, minScore, maxScore);
+                        sendMessage('h5p-score', { score: score, maxScore: maxScore });
                     }
                     
-                    // Set completion status
-                    if (verb.id.includes('passed')) {
-                        setSCORMStatus('passed');
+                    // Check for completion verbs
+                    if (verb.id.includes('completed')) {
+                        sendMessage('h5p-completed', {});
+                    } else if (verb.id.includes('passed')) {
+                        sendMessage('h5p-passed', {});
                     } else if (verb.id.includes('failed')) {
-                        setSCORMStatus('failed');
-                    } else {
-                        setSCORMStatus('completed');
+                        sendMessage('h5p-failed', {});
+                    } else if (verb.id.includes('answered')) {
+                        // For quiz-type content
+                        if (statement.result && statement.result.success !== undefined) {
+                            if (statement.result.success) {
+                                sendMessage('h5p-passed', {});
+                            } else {
+                                sendMessage('h5p-failed', {});
+                            }
+                        }
                     }
                 }
             }
         }
         
-        window.onbeforeunload = function() {
-            terminateSCORM();
-        };
+        function sendMessage(type, data) {
+            data.type = type;
+            window.parent.postMessage(data, '*');
+        }
+        
+        // Send completion on page unload as fallback
+        window.addEventListener('beforeunload', function() {
+            sendMessage('h5p-completed', {});
+        });
     <\/script>
 </body>
 </html>`;
@@ -617,7 +688,7 @@ function initializeSCORM() {
 function setSCORMStatus(status) {
     var api = getAPI();
     if (api != null && initialized) {
-        // SCORM 1.2 erlaubt nur: passed, completed, failed, incomplete, browsed, not attempted
+        // SCORM 1.2 allows: passed, completed, failed, incomplete, browsed, not attempted
         if (status === 'passed' || status === 'failed' || status === 'completed') {
             completionStatus = status;
             api.LMSSetValue("cmi.core.lesson_status", status);
@@ -630,22 +701,20 @@ function setSCORMStatus(status) {
 function setSCORMScore(score, minScore, maxScore) {
     var api = getAPI();
     if (api != null && initialized) {
-        // Setze Rohwert
+        // Set raw score
         api.LMSSetValue("cmi.core.score.raw", Math.round(score).toString());
         api.LMSSetValue("cmi.core.score.min", Math.round(minScore).toString());
         api.LMSSetValue("cmi.core.score.max", Math.round(maxScore).toString());
         
-        // Berechne Prozentwert für Pass/Fail (70% = bestanden)
+        // Calculate percentage for pass/fail (70% = passed)
         var percentage = ((score - minScore) / (maxScore - minScore)) * 100;
         
-        // Setze Status basierend auf Score, wenn noch nicht gesetzt
+        // Set status based on score if not already set
         if (completionStatus === 'incomplete') {
             if (percentage >= 70) {
-                api.LMSSetValue("cmi.core.lesson_status", "passed");
-                completionStatus = 'passed';
+                setSCORMStatus('passed');
             } else {
-                api.LMSSetValue("cmi.core.lesson_status", "failed");
-                completionStatus = 'failed';
+                setSCORMStatus('failed');
             }
         }
         
@@ -657,7 +726,7 @@ function setSCORMScore(score, minScore, maxScore) {
 function terminateSCORM() {
     var api = getAPI();
     if (api != null && initialized) {
-        // Setze auf completed wenn noch incomplete
+        // Set to completed if still incomplete
         var status = api.LMSGetValue("cmi.core.lesson_status");
         if (status == "incomplete") {
             api.LMSSetValue("cmi.core.lesson_status", "completed");
