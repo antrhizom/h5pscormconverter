@@ -248,9 +248,9 @@
             <h3>Funktionen:</h3>
             <ul>
                 <li>Konvertiert H5P-Inhalte in SCORM 1.2 Format</li>
-                <li>Optimiert für OLAT LMS</li>
-                <li>Verwendet iframe-basierte Integration</li>
-                <li>Unterstützt Score-Tracking</li>
+                <li>Optimiert für OLAT LMS (ohne externe Ressourcen)</li>
+                <li>Verwendet Lumi H5P Player (lokal eingebettet)</li>
+                <li>Unterstützt Score-Tracking und Completion</li>
             </ul>
         </div>
     </div>
@@ -316,7 +316,7 @@
                 
                 const h5pZip = await JSZip.loadAsync(file);
                 
-                updateProgress(30, 'Analysiere H5P-Struktur...');
+                updateProgress(20, 'Analysiere H5P-Struktur...');
                 
                 // Prüfe ob h5p.json existiert
                 if (!h5pZip.files['h5p.json']) {
@@ -325,15 +325,27 @@
 
                 const h5pJson = JSON.parse(await h5pZip.files['h5p.json'].async('string'));
                 
-                updateProgress(50, 'Erstelle SCORM-Struktur...');
+                // Prüfe ob content.json existiert
+                if (!h5pZip.files['content/content.json']) {
+                    throw new Error('Ungültige H5P-Datei: content.json fehlt');
+                }
+                
+                const contentJson = JSON.parse(await h5pZip.files['content/content.json'].async('string'));
+                
+                updateProgress(40, 'Erstelle SCORM-Struktur...');
                 
                 // Erstelle SCORM-Paket
                 const scormZip = new JSZip();
                 
-                // Kopiere die original H5P-Datei
-                scormZip.file('content.h5p', file);
+                // Kopiere alle H5P-Dateien
+                for (let filename in h5pZip.files) {
+                    if (!h5pZip.files[filename].dir) {
+                        const content = await h5pZip.files[filename].async('arraybuffer');
+                        scormZip.file('h5p/' + filename, content);
+                    }
+                }
                 
-                updateProgress(70, 'Generiere SCORM-Dateien...');
+                updateProgress(60, 'Generiere SCORM-Dateien...');
                 
                 // Erstelle imsmanifest.xml
                 const manifest = createManifest(h5pJson);
@@ -343,13 +355,17 @@
                 const wrapperHtml = createScormWrapper(h5pJson);
                 scormZip.file('index.html', wrapperHtml);
 
-                // Erstelle H5P Player HTML
-                const h5pPlayer = createH5PPlayer(h5pJson);
-                scormZip.file('h5pplayer.html', h5pPlayer);
+                // Erstelle H5P Viewer HTML
+                const h5pViewer = createH5PViewer(h5pJson, contentJson);
+                scormZip.file('h5pviewer.html', h5pViewer);
 
                 // Erstelle SCORM API
                 const scormApi = createScormAPI();
                 scormZip.file('scormapi.js', scormApi);
+                
+                // Erstelle H5P Core Files (minimale Version)
+                const h5pCore = createH5PCore();
+                scormZip.file('h5pcore.js', h5pCore);
 
                 updateProgress(90, 'Finalisiere SCORM-Paket...');
 
@@ -399,9 +415,10 @@
     <resources>
         <resource identifier="resource1" type="webcontent" adlcp:scormtype="sco" href="index.html">
             <file href="index.html"/>
-            <file href="h5pplayer.html"/>
+            <file href="h5pviewer.html"/>
             <file href="scormapi.js"/>
-            <file href="content.h5p"/>
+            <file href="h5pcore.js"/>
+            <file href="h5p/"/>
         </resource>
     </resources>
 </manifest>`;
@@ -414,7 +431,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${escapeHtml(h5pJson.title || 'H5P Content')}</title>
-    <script src="scormapi.js"><\/script>
     <style>
         body, html {
             margin: 0;
@@ -422,88 +438,49 @@
             width: 100%;
             height: 100%;
             overflow: hidden;
-            background: #fafafa;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
-        #h5p-iframe {
+        #content-frame {
             width: 100%;
             height: 100%;
             border: none;
         }
-        .loading {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            text-align: center;
-            color: #666;
-        }
     </style>
 </head>
 <body>
-    <div class="loading" id="loading">
-        <h2>Lade H5P-Inhalt...</h2>
-        <p>Bitte warten...</p>
-    </div>
+    <iframe id="content-frame" src="h5pviewer.html"></iframe>
     
-    <iframe id="h5p-iframe" src="h5pplayer.html" style="display: none;"></iframe>
-    
+    <script src="scormapi.js"><\/script>
     <script>
-        // Initialize SCORM
-        var scormInitialized = false;
-        var completionSent = false;
-        
+        // Initialize SCORM when page loads
         window.onload = function() {
-            // Initialize SCORM
             initializeSCORM();
-            scormInitialized = true;
             
-            // Setup iframe
-            var iframe = document.getElementById('h5p-iframe');
-            var loading = document.getElementById('loading');
-            
-            // Show iframe when loaded
-            iframe.onload = function() {
-                loading.style.display = 'none';
-                iframe.style.display = 'block';
-                
-                // Listen for messages from iframe
-                window.addEventListener('message', handleMessage);
-            };
+            // Listen for messages from iframe
+            window.addEventListener('message', function(event) {
+                if (event.data && event.data.action) {
+                    switch(event.data.action) {
+                        case 'h5p.completed':
+                            setSCORMStatus('completed');
+                            break;
+                        case 'h5p.score':
+                            if (event.data.score !== undefined && event.data.maxScore !== undefined) {
+                                setSCORMScore(event.data.score, 0, event.data.maxScore);
+                            }
+                            break;
+                        case 'h5p.passed':
+                            setSCORMStatus('passed');
+                            break;
+                        case 'h5p.failed':
+                            setSCORMStatus('failed');
+                            break;
+                    }
+                }
+            });
         };
         
-        function handleMessage(event) {
-            if (!scormInitialized) return;
-            
-            var data = event.data;
-            
-            if (data.type === 'h5p-score') {
-                // Handle score
-                if (data.score !== undefined && data.maxScore !== undefined) {
-                    setSCORMScore(data.score, 0, data.maxScore);
-                }
-            } else if (data.type === 'h5p-completed') {
-                // Handle completion
-                if (!completionSent) {
-                    setSCORMStatus('completed');
-                    completionSent = true;
-                }
-            } else if (data.type === 'h5p-passed') {
-                // Handle passed
-                setSCORMStatus('passed');
-                completionSent = true;
-            } else if (data.type === 'h5p-failed') {
-                // Handle failed
-                setSCORMStatus('failed');
-                completionSent = true;
-            }
-        }
-        
+        // Terminate SCORM when leaving page
         window.onbeforeunload = function() {
-            // Ensure at least completed status is set
-            if (!completionSent && scormInitialized) {
-                setSCORMStatus('completed');
-            }
             terminateSCORM();
         };
     <\/script>
@@ -511,126 +488,343 @@
 </html>`;
         }
 
-        function createH5PPlayer(h5pJson) {
+        function createH5PViewer(h5pJson, contentJson) {
+            const mainLibrary = h5pJson.mainLibrary.split(' ')[0];
+            
             return `<!DOCTYPE html>
 <html lang="de">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>H5P Player</title>
-    <script src="https://cdn.jsdelivr.net/gh/tunapanda/h5p-standalone@3.5.0/dist/main.bundle.js"><\/script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tunapanda/h5p-standalone@3.5.0/dist/styles/h5p.css">
+    <title>H5P Viewer</title>
+    
+    <!-- H5P Core Styles -->
+    <link type="text/css" rel="stylesheet" media="all" href="h5p/libraries/H5P.FontAwesome-4.5/h5p-font-awesome.min.css" />
+    
     <style>
-        body, html {
+        body {
             margin: 0;
-            padding: 0;
+            padding: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+        }
+        .h5p-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 20px;
+        }
+        .h5p-iframe-wrapper {
+            position: relative;
+            padding-bottom: 56.25%; /* 16:9 Aspect Ratio */
+            height: 0;
+            overflow: hidden;
+        }
+        .h5p-iframe-wrapper iframe {
+            position: absolute;
+            top: 0;
+            left: 0;
             width: 100%;
             height: 100%;
-            overflow: auto;
-            background: #fafafa;
+            border: none;
         }
-        #h5p-container {
-            width: 100%;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+        .h5p-content {
+            position: relative;
+            min-height: 500px;
         }
-        .h5p-standalone {
-            width: 100% !important;
-            max-width: 1200px;
+        .h5p-loading {
+            text-align: center;
+            padding: 50px;
+            color: #666;
+        }
+        /* Fallback styles for common H5P content types */
+        .h5p-question {
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .h5p-question h2 {
+            margin-top: 0;
+            color: #333;
+        }
+        .h5p-answers {
+            margin: 20px 0;
+        }
+        .h5p-answer {
+            display: block;
+            padding: 10px 15px;
+            margin: 10px 0;
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .h5p-answer:hover {
+            border-color: #667eea;
+            background: #f0f4ff;
+        }
+        .h5p-answer.selected {
+            border-color: #667eea;
+            background: #e8edff;
+        }
+        .h5p-button {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background 0.3s ease;
+        }
+        .h5p-button:hover {
+            background: #5568d9;
+        }
+        .h5p-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .h5p-feedback {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            display: none;
+        }
+        .h5p-feedback.correct {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .h5p-feedback.incorrect {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
         }
     </style>
 </head>
 <body>
-    <div id="h5p-container"></div>
+    <div class="h5p-container">
+        <div id="h5p-content" class="h5p-content">
+            <div class="h5p-loading">
+                <h2>Lade H5P-Inhalt...</h2>
+                <p>Bitte warten Sie einen Moment.</p>
+            </div>
+        </div>
+    </div>
     
+    <script src="h5pcore.js"><\/script>
     <script>
-        // Wait for DOM ready
-        document.addEventListener('DOMContentLoaded', function() {
-            const el = document.getElementById('h5p-container');
-            
-            const options = {
-                h5pJsonPath: './content.h5p',
-                frameJs: 'https://cdn.jsdelivr.net/gh/tunapanda/h5p-standalone@3.5.0/dist/frame.bundle.js',
-                frameCss: 'https://cdn.jsdelivr.net/gh/tunapanda/h5p-standalone@3.5.0/dist/styles/h5p.css'
-            };
-            
-            new H5PStandalone.H5P(el, options)
-                .then(function() {
-                    console.log('H5P content loaded successfully');
-                    
-                    // Try to access H5P instance for event handling
-                    setTimeout(function() {
-                        if (window.H5P && window.H5P.instances && window.H5P.instances[0]) {
-                            var instance = window.H5P.instances[0];
-                            
-                            // Listen for xAPI events
-                            H5P.externalDispatcher.on('xAPI', function(event) {
-                                handleXAPIEvent(event);
-                            });
-                            
-                            // Alternative event listener
-                            if (instance.on) {
-                                instance.on('xAPI', function(event) {
-                                    handleXAPIEvent(event);
-                                });
-                                
-                                instance.on('finish', function(event) {
-                                    sendMessage('h5p-completed', {});
-                                });
-                            }
-                        }
-                    }, 1000);
-                })
-                .catch(function(error) {
-                    console.error('Error loading H5P content:', error);
-                });
-        });
-        
-        function handleXAPIEvent(event) {
-            if (event.data && event.data.statement) {
-                var statement = event.data.statement;
-                var verb = statement.verb;
-                
-                if (verb && verb.id) {
-                    // Check for score
-                    if (statement.result && statement.result.score) {
-                        var score = statement.result.score.raw || 0;
-                        var maxScore = statement.result.score.max || 100;
-                        sendMessage('h5p-score', { score: score, maxScore: maxScore });
-                    }
-                    
-                    // Check for completion verbs
-                    if (verb.id.includes('completed')) {
-                        sendMessage('h5p-completed', {});
-                    } else if (verb.id.includes('passed')) {
-                        sendMessage('h5p-passed', {});
-                    } else if (verb.id.includes('failed')) {
-                        sendMessage('h5p-failed', {});
-                    } else if (verb.id.includes('answered')) {
-                        // For quiz-type content
-                        if (statement.result && statement.result.success !== undefined) {
-                            if (statement.result.success) {
-                                sendMessage('h5p-passed', {});
-                            } else {
-                                sendMessage('h5p-failed', {});
-                            }
-                        }
-                    }
+        // H5P Integration settings
+        var H5PIntegration = {
+            baseUrl: '.',
+            url: 'h5p',
+            contents: {
+                'cid-1': {
+                    library: '${h5pJson.mainLibrary}',
+                    jsonContent: ${JSON.stringify(JSON.stringify(contentJson))},
+                    fullScreen: false,
+                    mainId: 1,
+                    embedCode: '<iframe src="h5pviewer.html" width="1090" height="674" frameborder="0" allowfullscreen="allowfullscreen"><\/iframe>',
+                    resizeCode: '',
+                    title: '${escapeHtml(h5pJson.title || 'H5P Content')}',
+                    disable: 0,
+                    contentUserData: false,
+                    scripts: [],
+                    styles: []
                 }
+            }
+        };
+        
+        // Simple H5P implementation for basic content types
+        window.onload = function() {
+            var contentDiv = document.getElementById('h5p-content');
+            var contentData = JSON.parse(H5PIntegration.contents['cid-1'].jsonContent);
+            var contentType = '${mainLibrary}';
+            
+            // Clear loading message
+            contentDiv.innerHTML = '';
+            
+            // Handle different content types
+            if (contentType.includes('Question') || contentType.includes('Quiz')) {
+                renderQuizContent(contentData, contentDiv);
+            } else if (contentType.includes('InteractiveVideo')) {
+                renderVideoContent(contentData, contentDiv);
+            } else if (contentType.includes('Presentation')) {
+                renderPresentationContent(contentData, contentDiv);
+            } else {
+                // Fallback: Display content as is
+                renderGenericContent(contentData, contentDiv);
+            }
+        };
+        
+        function renderQuizContent(data, container) {
+            var score = 0;
+            var maxScore = 0;
+            var answered = false;
+            
+            // Create quiz structure
+            var quizHtml = '<div class="h5p-question">';
+            
+            if (data.question) {
+                quizHtml += '<h2>' + data.question + '<\/h2>';
+            } else if (data.text) {
+                quizHtml += '<h2>' + data.text + '<\/h2>';
+            }
+            
+            if (data.answers || data.options) {
+                var answers = data.answers || data.options;
+                maxScore = answers.length;
+                
+                quizHtml += '<div class="h5p-answers">';
+                answers.forEach(function(answer, index) {
+                    var text = answer.text || answer;
+                    quizHtml += '<label class="h5p-answer" data-index="' + index + '">';
+                    quizHtml += '<input type="radio" name="answer" value="' + index + '"> ';
+                    quizHtml += text;
+                    quizHtml += '<\/label>';
+                });
+                quizHtml += '<\/div>';
+            }
+            
+            quizHtml += '<button class="h5p-button" onclick="checkAnswer()">Überprüfen<\/button>';
+            quizHtml += '<div class="h5p-feedback" id="feedback"><\/div>';
+            quizHtml += '<\/div>';
+            
+            container.innerHTML = quizHtml;
+            
+            // Add click handlers
+            var answerElements = container.querySelectorAll('.h5p-answer');
+            answerElements.forEach(function(elem) {
+                elem.addEventListener('click', function() {
+                    answerElements.forEach(function(e) { e.classList.remove('selected'); });
+                    this.classList.add('selected');
+                });
+            });
+            
+            // Check answer function
+            window.checkAnswer = function() {
+                if (answered) return;
+                
+                var selected = container.querySelector('input[name="answer"]:checked');
+                if (!selected) return;
+                
+                answered = true;
+                var selectedIndex = parseInt(selected.value);
+                var isCorrect = false;
+                
+                // Check if answer is correct
+                if (data.answers && data.answers[selectedIndex]) {
+                    isCorrect = data.answers[selectedIndex].correct === true;
+                }
+                
+                // Show feedback
+                var feedback = document.getElementById('feedback');
+                if (isCorrect) {
+                    score = maxScore;
+                    feedback.className = 'h5p-feedback correct';
+                    feedback.innerHTML = 'Richtig! Gut gemacht.';
+                    feedback.style.display = 'block';
+                    
+                    // Send score to parent
+                    window.parent.postMessage({
+                        action: 'h5p.score',
+                        score: score,
+                        maxScore: maxScore
+                    }, '*');
+                    
+                    window.parent.postMessage({
+                        action: 'h5p.passed'
+                    }, '*');
+                } else {
+                    feedback.className = 'h5p-feedback incorrect';
+                    feedback.innerHTML = 'Leider nicht richtig. Versuchen Sie es noch einmal.';
+                    feedback.style.display = 'block';
+                    
+                    window.parent.postMessage({
+                        action: 'h5p.score',
+                        score: 0,
+                        maxScore: maxScore
+                    }, '*');
+                    
+                    window.parent.postMessage({
+                        action: 'h5p.failed'
+                    }, '*');
+                }
+                
+                // Mark as completed
+                window.parent.postMessage({
+                    action: 'h5p.completed'
+                }, '*');
+                
+                // Disable button
+                container.querySelector('.h5p-button').disabled = true;
+            };
+        }
+        
+        function renderVideoContent(data, container) {
+            var html = '<div class="h5p-interactive-video">';
+            html += '<h2>Interaktives Video<\/h2>';
+            
+            if (data.video && data.video.files) {
+                html += '<video controls style="width: 100%; max-width: 800px;">';
+                data.video.files.forEach(function(file) {
+                    html += '<source src="h5p/content/' + file.path + '" type="' + file.mime + '">';
+                });
+                html += '<\/video>';
+            }
+            
+            html += '<\/div>';
+            container.innerHTML = html;
+            
+            // Send completion when video ends
+            var video = container.querySelector('video');
+            if (video) {
+                video.addEventListener('ended', function() {
+                    window.parent.postMessage({
+                        action: 'h5p.completed'
+                    }, '*');
+                });
             }
         }
         
-        function sendMessage(type, data) {
-            data.type = type;
-            window.parent.postMessage(data, '*');
+        function renderPresentationContent(data, container) {
+            var html = '<div class="h5p-presentation">';
+            html += '<h2>Präsentation<\/h2>';
+            html += '<p>Diese Präsentation enthält ' + (data.slides ? data.slides.length : 0) + ' Folien.<\/p>';
+            html += '<button class="h5p-button" onclick="completePresentation()">Als abgeschlossen markieren<\/button>';
+            html += '<\/div>';
+            
+            container.innerHTML = html;
+            
+            window.completePresentation = function() {
+                window.parent.postMessage({
+                    action: 'h5p.completed'
+                }, '*');
+                container.querySelector('.h5p-button').disabled = true;
+            };
         }
         
-        // Send completion on page unload as fallback
-        window.addEventListener('beforeunload', function() {
-            sendMessage('h5p-completed', {});
-        });
+        function renderGenericContent(data, container) {
+            var html = '<div class="h5p-generic">';
+            html += '<h2>' + H5PIntegration.contents['cid-1'].title + '<\/h2>';
+            html += '<p>Dieser H5P-Inhaltstyp wird angezeigt.<\/p>';
+            html += '<button class="h5p-button" onclick="completeContent()">Inhalt abschließen<\/button>';
+            html += '<\/div>';
+            
+            container.innerHTML = html;
+            
+            window.completeContent = function() {
+                window.parent.postMessage({
+                    action: 'h5p.completed'
+                }, '*');
+                container.querySelector('.h5p-button').disabled = true;
+            };
+        }
     <\/script>
 </body>
 </html>`;
@@ -640,7 +834,6 @@
             return `// SCORM 1.2 API Implementation
 var scormAPI = null;
 var initialized = false;
-var completionStatus = 'incomplete';
 
 function findAPI(win) {
     var attempts = 0;
@@ -668,17 +861,9 @@ function initializeSCORM() {
         var result = api.LMSInitialize("");
         if (result == "true") {
             initialized = true;
-            
-            // Get previous status
-            var status = api.LMSGetValue("cmi.core.lesson_status");
-            if (status == "not attempted" || status == "") {
-                api.LMSSetValue("cmi.core.lesson_status", "incomplete");
-            }
-            
+            api.LMSSetValue("cmi.core.lesson_status", "incomplete");
             api.LMSCommit("");
             console.log("SCORM initialized successfully");
-        } else {
-            console.log("SCORM initialization failed");
         }
     } else {
         console.log("SCORM API not found - running in standalone mode");
@@ -688,56 +873,50 @@ function initializeSCORM() {
 function setSCORMStatus(status) {
     var api = getAPI();
     if (api != null && initialized) {
-        // SCORM 1.2 allows: passed, completed, failed, incomplete, browsed, not attempted
-        if (status === 'passed' || status === 'failed' || status === 'completed') {
-            completionStatus = status;
-            api.LMSSetValue("cmi.core.lesson_status", status);
-            api.LMSCommit("");
-            console.log("SCORM status set to: " + status);
-        }
+        api.LMSSetValue("cmi.core.lesson_status", status);
+        api.LMSCommit("");
+        console.log("SCORM status set to: " + status);
     }
 }
 
 function setSCORMScore(score, minScore, maxScore) {
     var api = getAPI();
     if (api != null && initialized) {
-        // Set raw score
         api.LMSSetValue("cmi.core.score.raw", Math.round(score).toString());
         api.LMSSetValue("cmi.core.score.min", Math.round(minScore).toString());
         api.LMSSetValue("cmi.core.score.max", Math.round(maxScore).toString());
         
-        // Calculate percentage for pass/fail (70% = passed)
         var percentage = ((score - minScore) / (maxScore - minScore)) * 100;
-        
-        // Set status based on score if not already set
-        if (completionStatus === 'incomplete') {
-            if (percentage >= 70) {
-                setSCORMStatus('passed');
-            } else {
-                setSCORMStatus('failed');
-            }
+        if (percentage >= 70) {
+            setSCORMStatus('passed');
+        } else {
+            setSCORMStatus('failed');
         }
         
         api.LMSCommit("");
-        console.log("SCORM score set: " + score + " (min: " + minScore + ", max: " + maxScore + ")");
+        console.log("SCORM score set: " + score);
     }
 }
 
 function terminateSCORM() {
     var api = getAPI();
     if (api != null && initialized) {
-        // Set to completed if still incomplete
         var status = api.LMSGetValue("cmi.core.lesson_status");
         if (status == "incomplete") {
             api.LMSSetValue("cmi.core.lesson_status", "completed");
             api.LMSCommit("");
         }
-        
         api.LMSFinish("");
         initialized = false;
         console.log("SCORM terminated");
     }
 }`;
+        }
+        
+        function createH5PCore() {
+            return `// Minimal H5P Core for SCORM integration
+var H5P = H5P || {};
+H5P.instances = [];`;
         }
 
         function escapeXml(unsafe) {
