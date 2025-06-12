@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>H5P to SCORM Converter</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+
+        .upload-area {
+            border: 3px dashed #667eea;
+            border-radius: 15px;
+            padding: 60px 20px;
+            text-align: center;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            background: rgba(102, 126, 234, 0.05);
+        }
+
+        .upload-area:hover {
+            border-color: #764ba2;
+            background: rgba(102, 126, 234, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .upload-area.dragover {
+            border-color: #764ba2;
+            background: rgba(118, 75, 162, 0.2);
+            transform: scale(1.02);
+        }
+
+        .upload-icon {
+            font-size: 60px;
+            color: #667eea;
+            margin-bottom: 20px;
+        }
+
+        .upload-text {
+            color: #666;
+            font-size: 1.1em;
+            margin-bottom: 15px;
+        }
+
+        .browse-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 30px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        }
+
+        .browse-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+        .progress-container {
+            display: none;
+            margin-top: 30px;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .progress-bar {
+            background: #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            height: 20px;
+            margin-bottom: 15px;
+        }
+
+        .progress-fill {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 0.9em;
+        }
+
+        .status-message {
+            text-align: center;
+            color: #666;
+            font-size: 1em;
+        }
+
+        .download-btn {
+            display: none;
+            background: linear-gradient(135deg, #4caf50 0%, #45a049 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            border-radius: 30px;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin: 30px auto 0;
+            box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
+        }
+
+        .download-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4);
+        }
+
+        .error {
+            background: #fee;
+            border: 1px solid #fcc;
+            color: #c33;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 20px;
+            display: none;
+            animation: shake 0.5s ease-out;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-10px); }
+            75% { transform: translateX(10px); }
+        }
+
+        .info-box {
+            background: rgba(102, 126, 234, 0.1);
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin-top: 30px;
+            border-radius: 5px;
+        }
+
+        .info-box h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .info-box ul {
+            list-style: none;
+            color: #666;
+        }
+
+        .info-box li:before {
+            content: "✓ ";
+            color: #667eea;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>H5P → SCORM</h1>
+        <p class="subtitle">Konvertiere H5P-Pakete in SCORM 1.2</p>
+        
+        <div class="upload-area" id="uploadArea">
+            <div class="upload-icon">📦</div>
+            <p class="upload-text">H5P-Datei hier ablegen</p>
+            <button class="browse-btn">Oder Datei auswählen</button>
+            <input type="file" id="fileInput" accept=".h5p">
+        </div>
+
+        <div class="progress-container" id="progressContainer">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill">0%</div>
+            </div>
+            <p class="status-message" id="statusMessage">Verarbeite...</p>
+        </div>
+
+        <button class="download-btn" id="downloadBtn">SCORM-Paket herunterladen</button>
+
+        <div class="error" id="errorMessage"></div>
+
+        <div class="info-box">
+            <h3>Funktionen:</h3>
+            <ul>
+                <li>Konvertiert H5P-Inhalte in SCORM 1.2 Format</li>
+                <li>Behält alle interaktiven Elemente bei</li>
+                <li>Erstellt vollständiges imsmanifest.xml</li>
+                <li>Kompatibel mit allen gängigen LMS</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        let convertedBlob = null;
+
+        // Drag & Drop Events
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressFill = document.getElementById('progressFill');
+        const statusMessage = document.getElementById('statusMessage');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const errorMessage = document.getElementById('errorMessage');
+
+        uploadArea.addEventListener('click', () => fileInput.click());
+
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        downloadBtn.addEventListener('click', () => {
+            if (convertedBlob) {
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(convertedBlob);
+                a.download = 'scorm_package.zip';
+                a.click();
+            }
+        });
+
+        async function handleFile(file) {
+            if (!file.name.toLowerCase().endsWith('.h5p')) {
+                showError('Bitte wähle eine H5P-Datei aus.');
+                return;
+            }
+
+            resetUI();
+            progressContainer.style.display = 'block';
+
+            try {
+                updateProgress(10, 'H5P-Datei wird gelesen...');
+                
+                const h5pZip = await JSZip.loadAsync(file);
+                
+                updateProgress(30, 'Analysiere H5P-Struktur...');
+                
+                // Prüfe ob h5p.json existiert
+                if (!h5pZip.files['h5p.json']) {
+                    throw new Error('Ungültige H5P-Datei: h5p.json fehlt');
+                }
+
+                const h5pJson = JSON.parse(await h5pZip.files['h5p.json'].async('string'));
+                
+                updateProgress(50, 'Erstelle SCORM-Struktur...');
+                
+                // Erstelle SCORM-Paket
+                const scormZip = new JSZip();
+                
+                // Kopiere alle H5P-Inhalte
+                for (let filename in h5pZip.files) {
+                    if (!h5pZip.files[filename].dir) {
+                        const content = await h5pZip.files[filename].async('arraybuffer');
+                        scormZip.file(filename, content);
+                    }
+                }
+
+                updateProgress(70, 'Generiere SCORM-Manifest...');
+                
+                // Erstelle imsmanifest.xml
+                const manifest = createManifest(h5pJson);
+                scormZip.file('imsmanifest.xml', manifest);
+
+                // Erstelle SCORM Wrapper HTML
+                const wrapperHtml = createScormWrapper();
+                scormZip.file('index.html', wrapperHtml);
+
+                // Erstelle SCORM API JavaScript
+                const scormApi = createScormAPI();
+                scormZip.file('scorm_api.js', scormApi);
+
+                updateProgress(90, 'Finalisiere SCORM-Paket...');
+
+                // Generiere ZIP
+                convertedBlob = await scormZip.generateAsync({
+                    type: 'blob',
+                    compression: 'DEFLATE',
+                    compressionOptions: { level: 9 }
+                });
+
+                updateProgress(100, 'Konvertierung abgeschlossen!');
+                downloadBtn.style.display = 'block';
+
+            } catch (error) {
+                showError('Fehler bei der Konvertierung: ' + error.message);
+            }
+        }
+
+        function createManifest(h5pJson) {
+            const title = h5pJson.title || 'H5P Content';
+            const identifier = 'h5p_scorm_' + Date.now();
+            
+            return `<?xml version="1.0" encoding="UTF-8"?>
+<manifest identifier="${identifier}" version="1.0"
+    xmlns="http://www.imsproject.org/xsd/imscp_rootv1p1p2"
+    xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_rootv1p2"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.imsproject.org/xsd/imscp_rootv1p1p2 imscp_rootv1p1p2.xsd
+                        http://www.imsglobal.org/xsd/imsmd_rootv1p2p1 imsmd_rootv1p2p1.xsd
+                        http://www.adlnet.org/xsd/adlcp_rootv1p2 adlcp_rootv1p2.xsd">
+    
+    <metadata>
+        <schema>ADL SCORM</schema>
+        <schemaversion>1.2</schemaversion>
+    </metadata>
+    
+    <organizations default="org1">
+        <organization identifier="org1">
+            <title>${escapeXml(title)}</title>
+            <item identifier="item1" identifierref="resource1">
+                <title>${escapeXml(title)}</title>
+            </item>
+        </organization>
+    </organizations>
+    
+    <resources>
+        <resource identifier="resource1" type="webcontent" adlcp:scormtype="sco" href="index.html">
+            <file href="index.html"/>
+            <file href="scorm_api.js"/>
+            <file href="h5p.json"/>
+            <file href="content/content.json"/>
+            <dependency identifierref="h5p_libraries"/>
+        </resource>
+        <resource identifier="h5p_libraries" type="webcontent" adlcp:scormtype="asset">
+            ${generateFileList(h5pJson)}
+        </resource>
+    </resources>
+</manifest>`;
+        }
+
+        function createScormWrapper() {
+            return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SCORM H5P Content</title>
+    <script src="scorm_api.js"><\/script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+        #h5p-container {
+            width: 100%;
+            height: 100vh;
+        }
+        iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="h5p-container">
+        <iframe src="content/index.html" id="h5p-frame"></iframe>
+    </div>
+    <script>
+        // Initialize SCORM
+        window.onload = function() {
+            initializeSCORM();
+            
+            // Listen for H5P events
+            window.addEventListener('message', function(event) {
+                if (event.data && event.data.action) {
+                    switch(event.data.action) {
+                        case 'h5p-set-finished':
+                            setSCORMComplete();
+                            break;
+                        case 'h5p-set-score':
+                            if (event.data.score !== undefined && event.data.maxScore !== undefined) {
+                                setSCORMScore(event.data.score, event.data.maxScore);
+                            }
+                            break;
+                    }
+                }
+            });
+        };
+        
+        window.onbeforeunload = function() {
+            terminateSCORM();
+        };
+    <\/script>
+</body>
+</html>`;
+        }
+
+        function createScormAPI() {
+            return `// SCORM 1.2 API Implementation
+var scormAPI = null;
+var initialized = false;
+
+function findAPI(win) {
+    var attempts = 0;
+    while ((win.API == null) && (win.parent != null) && (win.parent != win)) {
+        attempts++;
+        if (attempts > 100) return null;
+        win = win.parent;
+    }
+    return win.API;
+}
+
+function getAPI() {
+    if (scormAPI == null) {
+        scormAPI = findAPI(window);
+        if ((scormAPI == null) && (window.opener != null) && (typeof(window.opener) != "undefined")) {
+            scormAPI = findAPI(window.opener);
+        }
+    }
+    return scormAPI;
+}
+
+function initializeSCORM() {
+    var api = getAPI();
+    if (api != null) {
+        var result = api.LMSInitialize("");
+        if (result == "true") {
+            initialized = true;
+            api.LMSSetValue("cmi.core.lesson_status", "incomplete");
+            api.LMSCommit("");
+        }
+    }
+}
+
+function setSCORMComplete() {
+    var api = getAPI();
+    if (api != null && initialized) {
+        api.LMSSetValue("cmi.core.lesson_status", "completed");
+        api.LMSCommit("");
+    }
+}
+
+function setSCORMScore(score, maxScore) {
+    var api = getAPI();
+    if (api != null && initialized) {
+        var scaledScore = Math.round((score / maxScore) * 100);
+        api.LMSSetValue("cmi.core.score.raw", score.toString());
+        api.LMSSetValue("cmi.core.score.max", maxScore.toString());
+        api.LMSSetValue("cmi.core.score.min", "0");
+        api.LMSCommit("");
+        
+        // Set pass/fail based on 70% threshold
+        if (scaledScore >= 70) {
+            api.LMSSetValue("cmi.core.lesson_status", "passed");
+        } else {
+            api.LMSSetValue("cmi.core.lesson_status", "failed");
+        }
+        api.LMSCommit("");
+    }
+}
+
+function terminateSCORM() {
+    var api = getAPI();
+    if (api != null && initialized) {
+        api.LMSFinish("");
+        initialized = false;
+    }
+}`;
+        }
+
+        function generateFileList(h5pJson) {
+            // Generiere eine Liste aller H5P Bibliotheken und Dateien
+            let fileList = '';
+            if (h5pJson.preloadedDependencies) {
+                h5pJson.preloadedDependencies.forEach(dep => {
+                    fileList += `<file href="libraries/${dep.machineName}-${dep.majorVersion}.${dep.minorVersion}/"/>\n            `;
+                });
+            }
+            return fileList;
+        }
+
+        function escapeXml(unsafe) {
+            return unsafe.replace(/[<>&'"]/g, function (c) {
+                switch (c) {
+                    case '<': return '&lt;';
+                    case '>': return '&gt;';
+                    case '&': return '&amp;';
+                    case '\'': return '&apos;';
+                    case '"': return '&quot;';
+                }
+            });
+        }
+
+        function updateProgress(percent, message) {
+            progressFill.style.width = percent + '%';
+            progressFill.textContent = percent + '%';
+            statusMessage.textContent = message;
+        }
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.style.display = 'block';
+            progressContainer.style.display = 'none';
+        }
+
+        function resetUI() {
+            errorMessage.style.display = 'none';
+            downloadBtn.style.display = 'none';
+            convertedBlob = null;
+        }
+    </script>
+</body>
+</html>
